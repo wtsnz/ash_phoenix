@@ -27,6 +27,21 @@ defmodule AshPhoenix.Plug.CheckCodegenStatusTest do
     end
   end
 
+  defmodule RacyExtension do
+    # Reports a diff on the first check, like a check that raced the code
+    # reloader, and is clean when checked again.
+    def codegen(args) do
+      if Process.get({__MODULE__, :checked}) do
+        CleanExtension.codegen(args)
+      else
+        Process.put({__MODULE__, :checked}, true)
+
+        raise Ash.Error.Framework.PendingCodegen,
+          diff: %{"priv/repo/migrations/1_example.exs" => "contents"}
+      end
+    end
+  end
+
   defmodule PendingExtension do
     def codegen(_args) do
       raise Ash.Error.Framework.PendingCodegen,
@@ -61,14 +76,30 @@ defmodule AshPhoenix.Plug.CheckCodegenStatusTest do
   end
 
   if Code.ensure_loaded?(Mix.Project) and function_exported?(Mix.Project, :with_build_lock, 1) do
-    test "holds the build lock while checking, so concurrent compilation must wait" do
+    test "does not take the build lock when no codegen is pending" do
+      # Taking the build lock on every request makes concurrent requests wait
+      # on each other and on the code reloader.
+      :persistent_term.put(:ash_codegen_extensions, [CleanExtension])
+
+      Mix.Project.with_build_lock(fn ->
+        plug_task =
+          Task.async(fn ->
+            CheckCodegenStatus.call(Plug.Test.conn(:get, "/"), [])
+          end)
+
+        assert {:ok, %Plug.Conn{}} = Task.yield(plug_task, 1_000),
+               "expected the codegen check not to wait for the build lock"
+      end)
+    end
+
+    test "confirms a reported diff while holding the build lock" do
       # The check reads global compiler data: the Mix project stack and the
       # current directory. Phoenix.CodeReloader changes this data when it
       # compiles umbrella apps (Mix.Dep.in_dependency calls File.cd!).
-      # If the check does not hold the build lock, a reload can occur at the
-      # same time. The check then reads incorrect paths and reports pending
-      # codegen that is not real.
-      :persistent_term.put(:ash_codegen_extensions, [CleanExtension])
+      # If a reload occurs at the same time, the check reads incorrect paths
+      # and reports pending codegen that is not real. Checking again while
+      # holding the build lock discards that report.
+      :persistent_term.put(:ash_codegen_extensions, [RacyExtension])
       :persistent_term.put({CleanExtension, :test_pid}, self())
 
       plug_task =
@@ -84,10 +115,11 @@ defmodule AshPhoenix.Plug.CheckCodegenStatusTest do
       # :proceed below. So a lock that is still unavailable here means the
       # check is holding it, not that the check already returned.
       assert Task.yield(lock_task, 100) == nil,
-             "expected the codegen check to hold the build lock while running"
+             "expected the codegen check to hold the build lock while confirming a diff"
 
       send(codegen_pid, :proceed)
 
+      # The diff was not confirmed, so the request goes through
       assert %Plug.Conn{} = Task.await(plug_task, 2_000)
       assert {:ok, :acquired} = Task.yield(lock_task, 1_000)
     end

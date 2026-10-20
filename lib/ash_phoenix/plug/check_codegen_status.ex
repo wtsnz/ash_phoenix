@@ -22,37 +22,37 @@ defmodule AshPhoenix.Plug.CheckCodegenStatus do
       :persistent_term.get(:ash_codegen_extensions, nil) ||
         set_extensions()
 
-    with_build_lock(fn ->
-      Enum.flat_map(extensions, fn extension ->
-        try do
-          if function_exported?(extension, :codegen, 1) do
-            extension.codegen(["--dev", "--check"])
-          end
+    with [_ | _] <- pending_codegen(extensions),
+         [_ | _] = diff <- with_build_lock(fn -> pending_codegen(extensions) end) do
+      {:current_stacktrace, stack} = Process.info(self(), :current_stacktrace)
 
-          []
-        rescue
-          e in Ash.Error.Framework.PendingCodegen ->
-            Enum.to_list(e.diff)
-
-          _ ->
-            []
-        end
-      end)
-    end)
-    |> case do
-      [] ->
-        conn
-
-      diff ->
-        {:current_stacktrace, stack} = Process.info(self(), :current_stacktrace)
-
-        Plug.Conn.WrapperError.reraise(
-          conn,
-          :error,
-          Ash.Error.Framework.PendingCodegen.exception(diff: diff, explain: true),
-          Enum.drop(stack, 1)
-        )
+      Plug.Conn.WrapperError.reraise(
+        conn,
+        :error,
+        Ash.Error.Framework.PendingCodegen.exception(diff: diff, explain: true),
+        Enum.drop(stack, 1)
+      )
+    else
+      [] -> conn
     end
+  end
+
+  defp pending_codegen(extensions) do
+    Enum.flat_map(extensions, fn extension ->
+      try do
+        if function_exported?(extension, :codegen, 1) do
+          extension.codegen(["--dev", "--check"])
+        end
+
+        []
+      rescue
+        e in Ash.Error.Framework.PendingCodegen ->
+          Enum.to_list(e.diff)
+
+        _ ->
+          []
+      end
+    end)
   end
 
   defp set_extensions do
@@ -73,6 +73,11 @@ defmodule AshPhoenix.Plug.CheckCodegenStatus do
   # The code reloader holds the build lock. When the check also holds this
   # lock, the two operations occur one after the other. This prevents the
   # incorrect report.
+  # The build lock is an OS-level lock that only the holding process can
+  # re-enter, so taking it on every request makes concurrent requests wait on
+  # each other and on the reloader, printing "Waiting for lock on the build
+  # directory" each time. So we check without it, and only take it to confirm
+  # a reported diff.
   # The fallback clause can go once we require Elixir 1.18, which always has
   # `Mix.Project.with_build_lock/1`.
   if Code.ensure_loaded?(Mix.Project) and function_exported?(Mix.Project, :with_build_lock, 1) do
