@@ -11,6 +11,21 @@ See [Conventional Commits](Https://conventionalcommits.org) for commit guideline
 
 <!-- changelog -->
 
+## [v2.3.26](https://github.com/ash-project/ash_phoenix/compare/v2.3.25...v2.3.26) (2026-10-25)
+
+
+
+
+### Bug Fixes:
+
+* don't take a build lock on all dev requests by [@zachdaniel](https://github.com/zachdaniel)
+
+* properly include nested forms past 1 level by [@zachdaniel](https://github.com/zachdaniel)
+
+* Clear Elixir 1.20 form warnings (#485) by George Guimarães
+
+* match the type modules that exist in input_validations (#484) by Mike Buhot
+
 ## [v2.3.25](https://github.com/ash-project/ash_phoenix/compare/v2.3.24...v2.3.25) (2026-08-31)
 
 
