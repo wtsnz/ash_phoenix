@@ -320,7 +320,7 @@ defmodule AshPhoenix.FilterForm do
   end
 
   @doc """
-  Returns a filter map that can be provided to `Ash.Filter.parse`
+  Returns a filter map that can be provided to `Ash.Query.filter_input/3` (or `Ash.Filter.parse_input/3`)
 
   This allows for things like saving a stored filter. Does not currently support parameterizing calculations or functions.
   """
@@ -411,14 +411,19 @@ defmodule AshPhoenix.FilterForm do
   end
 
   @doc """
-  Returns a filter expression that can be provided to Ash.Query.filter/2
+  Returns a filter expression that can be provided to `Ash.Query.filter_input/3`
 
-  To add this to a query, remember to use `^`, for example:
+  The expression is built from the submitted params, so its references are marked as client
+  input: field policies and the read policies of related resources apply to them. Apply it with
+  `Ash.Query.filter_input/3`:
   ```elixir
-  filter = AshPhoenix.FilterForm.to_filter_expression(form)
+  {:ok, filter} = AshPhoenix.FilterForm.to_filter_expression(form)
 
-  Ash.Query.filter(MyApp.Post, ^filter)
+  Ash.Query.filter_input(MyApp.Post, filter)
   ```
+
+  `Ash.Query.filter(MyApp.Post, ^filter)` applies the same policies, since the references are
+  marked, but `filter_input/3` also only allows public fields and relationships.
 
   Alternatively, you can use the shorthand: `filter/2` to apply the expression directly to a query.
   """
@@ -457,7 +462,7 @@ defmodule AshPhoenix.FilterForm do
     end
   end
 
-  @deprecated "Use to_filter_expression!/1 instead"
+  @deprecated "Use to_filter_expression!/1 instead, and apply it with Ash.Query.filter_input/3"
   def to_filter!(form), do: to_filter_expression!(form)
 
   @doc """
@@ -587,10 +592,19 @@ defmodule AshPhoenix.FilterForm do
     end
   end
 
+  # The refs are built from submitted params, so they're marked as client input. Ash applies
+  # field policies and the read policies of related resources to them, however the expression is
+  # applied.
   defp build_ref(related_resource, path, field, arguments) do
     case Ash.Resource.Info.public_calculation(related_resource, field) do
       nil ->
-        {:ok, Ash.Expr.expr(^Ash.Expr.ref(List.wrap(path), field))}
+        {:ok,
+         %Ash.Query.Ref{
+           attribute: field,
+           relationship_path: List.wrap(path),
+           resource: related_resource,
+           input?: true
+         }}
 
       %{calculation: {module, calc_opts}} = calc ->
         with {:ok, input} <-
@@ -627,11 +641,14 @@ defmodule AshPhoenix.FilterForm do
 
   @doc """
   Converts the form into a filter, and filters the provided query or resource with that filter.
+
+  The filter is applied as client input with `Ash.Query.filter_input/3`, so field policies and
+  the read policies of related resources apply to it.
   """
   def filter(query, form) do
     case to_filter_expression(form) do
       {:ok, filter} ->
-        {:ok, Ash.Query.do_filter(query, filter)}
+        {:ok, Ash.Query.filter_input(query, filter)}
 
       {:error, error} ->
         {:error, error}
@@ -642,7 +659,7 @@ defmodule AshPhoenix.FilterForm do
   Same as `filter/2` but raises on errors.
   """
   def filter!(query, form) do
-    Ash.Query.do_filter(query, to_filter_expression!(form))
+    Ash.Query.filter_input(query, to_filter_expression!(form))
   end
 
   defp sanitize_params(params) do
